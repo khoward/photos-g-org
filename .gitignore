@@ -8,6 +8,9 @@ env/
 !package.json
 !package-lock.json
 
+# Config directory
+.config/
+
 # Python
 __pycache__/
 *.py[cod]

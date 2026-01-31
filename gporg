@@ -1,0 +1,220 @@
+#!/bin/bash
+# Google Photos Organizer
+
+set -e
+
+DEFAULT_HOME="/home/khoward/ideas/photos-organizer"
+
+usage() {
+    cat <<EOF
+Google Photos Organizer
+
+Usage: gporg [--home DIR] <command> [options]
+
+Commands:
+  gporg                              Start TUI (default)
+  gporg web                          Start web server (foreground)
+  gporg web --background             Start in background
+  gporg web --stop                   Stop background server
+  gporg web --public --port 8080     Network access on custom port
+  gporg config <path>                Set credentials file
+  gporg config --show                Show current config
+  gporg organize --year 2023         Organize photos from year
+  gporg organize --year 2023 --album "Name"
+
+Wrapper Options:
+  --home DIR    Override install directory
+                (default: \$GPORG_HOME or $DEFAULT_HOME)
+  -v            Increase verbosity (use -vv, -vvv, -vvvv for more)
+
+Environment:
+  GPORG_HOME    Install directory (if set, overrides default)
+
+Run 'gporg <command> --help' for command-specific options.
+EOF
+}
+
+# Security: Check for dangerous patterns in a string
+# Returns 0 if safe, 1 if suspicious
+validate_input() {
+    local input="$1"
+    local name="$2"
+
+    # Check for command substitution patterns
+    if [[ "$input" == *'$('* ]] || [[ "$input" == *'`'* ]]; then
+        echo "Error: Command substitution not allowed in $name"
+        return 1
+    fi
+
+    # Check for shell metacharacters that could enable injection
+    if [[ "$input" == *';'* ]] || [[ "$input" == *'|'* ]] || \
+       [[ "$input" == *'&'* ]] || [[ "$input" == *'<'* ]] || \
+       [[ "$input" == *'>'* ]]; then
+        echo "Error: Shell metacharacters not allowed in $name"
+        return 1
+    fi
+
+    # Check for newlines (could break command structure)
+    if [[ "$input" == *$'\n'* ]] || [[ "$input" == *$'\r'* ]]; then
+        echo "Error: Newlines not allowed in $name"
+        return 1
+    fi
+
+    # Check for control characters (ASCII 0-31 except tab)
+    if [[ "$input" =~ [[:cntrl:]] ]] && [[ "$input" != *$'\t'* ]]; then
+        # Double-check it's not just a tab
+        local cleaned="${input//$'\t'/}"
+        if [[ "$cleaned" =~ [[:cntrl:]] ]]; then
+            echo "Error: Control characters not allowed in $name"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# Security: Validate path doesn't escape or use tricks
+validate_path() {
+    local path="$1"
+    local name="$2"
+
+    # Run general input validation first
+    if ! validate_input "$path" "$name"; then
+        return 1
+    fi
+
+    # Check for path traversal attempts (excessive ..)
+    local normalized
+    normalized=$(realpath -m "$path" 2>/dev/null) || {
+        echo "Error: Invalid path in $name"
+        return 1
+    }
+
+    # Block paths with weird characters
+    if [[ "$path" =~ [[:cntrl:]] ]]; then
+        echo "Error: Control characters not allowed in $name"
+        return 1
+    fi
+
+    return 0
+}
+
+# Security: Validate command/subcommand names
+validate_command() {
+    local cmd="$1"
+
+    # Commands should be simple alphanumeric with dashes
+    if [[ ! "$cmd" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "Error: Invalid command name: $cmd"
+        return 1
+    fi
+
+    # Check against known commands
+    case "$cmd" in
+        web|config|organize|--help|-h|--home|--background|-b|--stop|--public|--port|--show|--year|--album|--no-skip)
+            return 0
+            ;;
+        *)
+            # Allow unknown args to pass through to Python for validation
+            return 0
+            ;;
+    esac
+}
+
+# Security: Validate all arguments
+validate_all_args() {
+    for arg in "$@"; do
+        if ! validate_input "$arg" "argument"; then
+            exit 1
+        fi
+
+        # Extra validation for things that look like paths
+        if [[ "$arg" == /* ]] || [[ "$arg" == ~* ]] || [[ "$arg" == ./* ]]; then
+            if ! validate_path "$arg" "path argument"; then
+                exit 1
+            fi
+        fi
+    done
+}
+
+# Determine GPORG_HOME: env var takes precedence, then default
+if [[ -n "${GPORG_HOME}" ]]; then
+    if ! validate_path "${GPORG_HOME}" "GPORG_HOME"; then
+        exit 1
+    fi
+    home="${GPORG_HOME}"
+else
+    home="${DEFAULT_HOME}"
+fi
+
+# Validate all incoming arguments first
+validate_all_args "$@"
+
+# Parse wrapper arguments
+args=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --home)
+            if [[ -z "$2" ]]; then
+                echo "Error: --home requires a directory argument"
+                exit 1
+            fi
+            if ! validate_path "$2" "--home"; then
+                exit 1
+            fi
+            home="$2"
+            shift 2
+            ;;
+        --help|-h)
+            if [[ ${#args[@]} -eq 0 ]]; then
+                usage
+                exit 0
+            fi
+            args+=("$1")
+            shift
+            ;;
+        --)
+            # Stop processing wrapper args
+            shift
+            args+=("$@")
+            break
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Validate home directory exists and contains expected files
+if [[ ! -d "${home}" ]]; then
+    echo "Error: GPORG_HOME directory not found: ${home}"
+    exit 1
+fi
+
+if [[ ! -f "${home}/gporg.py" ]]; then
+    echo "Error: gporg.py not found in ${home}"
+    exit 1
+fi
+
+if [[ ! -f "${home}/venv/bin/python" ]]; then
+    echo "Error: venv not found in ${home}/venv"
+    echo "Run: cd ${home} && python -m venv venv && pip install -r requirements.txt"
+    exit 1
+fi
+
+# Final safety check: ensure python binary is actually python
+python_bin="${home}/venv/bin/python"
+if [[ ! -x "$python_bin" ]]; then
+    echo "Error: Python binary not executable"
+    exit 1
+fi
+
+# Verify it's a real Python interpreter (basic check)
+if ! "$python_bin" -c "import sys" 2>/dev/null; then
+    echo "Error: Invalid Python interpreter"
+    exit 1
+fi
+
+# Run the Python script with all collected arguments
+exec "$python_bin" "${home}/gporg.py" "${args[@]}"

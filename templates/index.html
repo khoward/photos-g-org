@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Photos Organizer</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <main class="container">
+        <header class="glass-header">
+            <h1>Google Photos Organizer</h1>
+        </header>
+
+        <!-- Credentials Card -->
+        <article class="glass-card" id="credentials-card">
+            <header>
+                <h3>Credentials</h3>
+                <span class="status-badge" id="creds-status">Checking...</span>
+            </header>
+            <div class="card-content">
+                <label for="creds-path">Service Account JSON Path</label>
+                <input type="text" id="creds-path" placeholder="~/.config/gporg/service-account.json">
+                <button class="secondary" onclick="saveCredentials()">Save Credentials</button>
+            </div>
+        </article>
+
+        <!-- Filter Card -->
+        <article class="glass-card">
+            <header>
+                <h3>Filter</h3>
+            </header>
+            <div class="card-content">
+                <label for="year-select">Year</label>
+                <select id="year-select">
+                    <option value="">Select year...</option>
+                </select>
+            </div>
+        </article>
+
+        <!-- Album Card -->
+        <article class="glass-card">
+            <header>
+                <h3>Destination Album</h3>
+            </header>
+            <div class="card-content">
+                <fieldset>
+                    <label>
+                        <input type="radio" name="album-mode" value="new" checked onchange="toggleAlbumMode()">
+                        Create new album
+                    </label>
+                    <label>
+                        <input type="radio" name="album-mode" value="existing" onchange="toggleAlbumMode()">
+                        Use existing album
+                    </label>
+                </fieldset>
+
+                <div id="new-album-section">
+                    <label for="new-album-name">Album Name</label>
+                    <input type="text" id="new-album-name" placeholder="Photos from 2023">
+                </div>
+
+                <div id="existing-album-section" class="hidden">
+                    <label for="existing-album">Select Album</label>
+                    <select id="existing-album">
+                        <option value="">Loading albums...</option>
+                    </select>
+                    <button class="secondary outline" onclick="loadAlbums()">Refresh</button>
+                </div>
+            </div>
+        </article>
+
+        <!-- Options Card -->
+        <article class="glass-card">
+            <header>
+                <h3>Options</h3>
+            </header>
+            <div class="card-content">
+                <label>
+                    <input type="checkbox" id="skip-existing" checked>
+                    Skip photos already in album
+                </label>
+            </div>
+        </article>
+
+        <!-- Action Button -->
+        <button class="primary big-button" id="organize-btn" onclick="startOrganize()">
+            Organize Photos
+        </button>
+
+        <!-- Progress Card -->
+        <article class="glass-card" id="progress-card">
+            <header>
+                <h3>Progress</h3>
+            </header>
+            <div class="card-content">
+                <progress id="progress-bar" value="0" max="100"></progress>
+                <p id="progress-text" class="progress-status">Ready</p>
+            </div>
+        </article>
+    </main>
+
+    <script>
+        // API Key management
+        let apiKey = localStorage.getItem('gporg_api_key');
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', async () => {
+            await ensureApiKey();
+            checkConfig();
+            loadYears();
+            loadAlbums();
+        });
+
+        // Ensure we have an API key
+        async function ensureApiKey() {
+            if (apiKey) return true;
+
+            // Try to get key from server (only works from localhost)
+            try {
+                const response = await fetch('/api/key');
+                if (response.ok) {
+                    const data = await response.json();
+                    apiKey = data.api_key;
+                    localStorage.setItem('gporg_api_key', apiKey);
+                    return true;
+                } else if (response.status === 403) {
+                    // Not localhost, need to prompt for key
+                    promptForApiKey();
+                    return false;
+                }
+            } catch (e) {
+                console.error('Error getting API key:', e);
+                promptForApiKey();
+                return false;
+            }
+            return false;
+        }
+
+        // Prompt user for API key
+        function promptForApiKey() {
+            const key = prompt('Enter API Key (shown when server starts):');
+            if (key) {
+                apiKey = key;
+                localStorage.setItem('gporg_api_key', apiKey);
+                location.reload();
+            }
+        }
+
+        // Make authenticated fetch request
+        async function authFetch(url, options = {}) {
+            if (!apiKey) {
+                await ensureApiKey();
+            }
+
+            const headers = options.headers || {};
+            headers['X-API-Key'] = apiKey;
+
+            const response = await fetch(url, { ...options, headers });
+
+            // If unauthorized, clear key and prompt
+            if (response.status === 401) {
+                localStorage.removeItem('gporg_api_key');
+                apiKey = null;
+                promptForApiKey();
+                throw new Error('Invalid API key');
+            }
+
+            return response;
+        }
+
+        // Check credentials configuration
+        async function checkConfig() {
+            try {
+                const response = await authFetch('/api/config');
+                const data = await response.json();
+
+                const statusBadge = document.getElementById('creds-status');
+                const credsPath = document.getElementById('creds-path');
+
+                if (data.configured) {
+                    statusBadge.textContent = 'Configured';
+                    statusBadge.className = 'status-badge success';
+                    credsPath.value = data.credentials_file || '';
+                } else {
+                    statusBadge.textContent = 'Not Configured';
+                    statusBadge.className = 'status-badge error';
+                }
+            } catch (e) {
+                console.error('Error checking config:', e);
+            }
+        }
+
+        // Save credentials path
+        async function saveCredentials() {
+            const path = document.getElementById('creds-path').value;
+            if (!path) {
+                alert('Please enter a credentials path');
+                return;
+            }
+
+            try {
+                const response = await authFetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ credentials_path: path })
+                });
+
+                const data = await response.json();
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else {
+                    checkConfig();
+                    loadAlbums();
+                }
+            } catch (e) {
+                alert('Error saving credentials: ' + e.message);
+            }
+        }
+
+        // Load available years
+        async function loadYears() {
+            try {
+                const response = await fetch('/api/years');
+                const data = await response.json();
+
+                const select = document.getElementById('year-select');
+                select.innerHTML = '<option value="">Select year...</option>';
+
+                for (const year of data.years) {
+                    const option = document.createElement('option');
+                    option.value = year;
+                    option.textContent = year;
+                    select.appendChild(option);
+                }
+            } catch (e) {
+                console.error('Error loading years:', e);
+            }
+        }
+
+        // Load albums list
+        async function loadAlbums() {
+            const select = document.getElementById('existing-album');
+            select.innerHTML = '<option value="">Loading...</option>';
+
+            try {
+                const response = await authFetch('/api/albums');
+                const data = await response.json();
+
+                if (data.error) {
+                    select.innerHTML = '<option value="">Error loading albums</option>';
+                    return;
+                }
+
+                select.innerHTML = '<option value="">Select album...</option>';
+                for (const album of data.albums) {
+                    const option = document.createElement('option');
+                    option.value = album.id;
+                    option.textContent = album.title;
+                    select.appendChild(option);
+                }
+            } catch (e) {
+                select.innerHTML = '<option value="">Error loading albums</option>';
+            }
+        }
+
+        // Toggle album mode (new vs existing)
+        function toggleAlbumMode() {
+            const mode = document.querySelector('input[name="album-mode"]:checked').value;
+            document.getElementById('new-album-section').classList.toggle('hidden', mode !== 'new');
+            document.getElementById('existing-album-section').classList.toggle('hidden', mode !== 'existing');
+        }
+
+        // Start organization
+        async function startOrganize() {
+            const year = document.getElementById('year-select').value;
+            if (!year) {
+                alert('Please select a year');
+                return;
+            }
+
+            const mode = document.querySelector('input[name="album-mode"]:checked').value;
+            const skipExisting = document.getElementById('skip-existing').checked;
+
+            let albumId = null;
+            let albumName = null;
+
+            if (mode === 'new') {
+                albumName = document.getElementById('new-album-name').value || `Photos from ${year}`;
+            } else {
+                albumId = document.getElementById('existing-album').value;
+                if (!albumId) {
+                    alert('Please select an album');
+                    return;
+                }
+            }
+
+            // Disable button
+            const btn = document.getElementById('organize-btn');
+            btn.disabled = true;
+            btn.textContent = 'Organizing...';
+
+            try {
+                const response = await authFetch('/api/organize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        year: parseInt(year),
+                        album_id: albumId,
+                        album_name: albumName,
+                        skip_existing: skipExisting
+                    })
+                });
+
+                const data = await response.json();
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    btn.disabled = false;
+                    btn.textContent = 'Organize Photos';
+                    return;
+                }
+
+                // Start polling for status
+                pollStatus();
+            } catch (e) {
+                alert('Error: ' + e.message);
+                btn.disabled = false;
+                btn.textContent = 'Organize Photos';
+            }
+        }
+
+        // Poll for organization status
+        let pollInterval = null;
+
+        async function pollStatus() {
+            if (pollInterval) clearInterval(pollInterval);
+
+            pollInterval = setInterval(async () => {
+                try {
+                    const response = await authFetch('/api/status');
+                    const data = await response.json();
+
+                    const progressBar = document.getElementById('progress-bar');
+                    const progressText = document.getElementById('progress-text');
+
+                    if (data.total > 0) {
+                        progressBar.max = data.total;
+                        progressBar.value = data.progress;
+                    }
+                    progressText.textContent = data.message;
+
+                    if (!data.running) {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+
+                        const btn = document.getElementById('organize-btn');
+                        btn.disabled = false;
+                        btn.textContent = 'Organize Photos';
+
+                        if (data.error) {
+                            progressText.classList.add('error');
+                        } else {
+                            progressText.classList.remove('error');
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error polling status:', e);
+                }
+            }, 500);
+        }
+    </script>
+</body>
+</html>
