@@ -40,7 +40,7 @@ class TestCLIWeb:
              patch.dict('sys.modules', {'web': MagicMock(run_server=mock_run_server)}):
             gporg.main()
 
-        mock_run_server.assert_called_once_with(port=9090, public=False)
+        mock_run_server.assert_called_once_with(port=8099, public=False)
 
     def test_web_custom_port(self):
         """Test 'gporg web --port' uses custom port."""
@@ -66,7 +66,7 @@ class TestCLIWeb:
              patch.dict('sys.modules', {'web': MagicMock(run_server=mock_run_server)}):
             gporg.main()
 
-        mock_run_server.assert_called_once_with(port=9090, public=True)
+        mock_run_server.assert_called_once_with(port=8099, public=True)
 
     def test_web_stop(self, tmp_path, monkeypatch):
         """Test 'gporg web --stop' stops background server."""
@@ -191,8 +191,12 @@ class TestCLIOrganize:
         ]
         mock_service.albums().batchAddMediaItems().execute.return_value = {}
 
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_creds.expired = False
+
         with patch.object(sys, 'argv', ['gporg', 'organize', '--year', '2023']), \
-             patch('core.service_account.Credentials.from_service_account_file'), \
+             patch.object(core.Config, 'load_credentials', return_value=mock_creds), \
              patch('core.build', return_value=mock_service):
             gporg.main()
 
@@ -217,8 +221,12 @@ class TestCLIOrganize:
         ]
         mock_service.albums().batchAddMediaItems().execute.return_value = {}
 
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_creds.expired = False
+
         with patch.object(sys, 'argv', ['gporg', 'organize', '--year', '2023', '--album', 'My Album']), \
-             patch('core.service_account.Credentials.from_service_account_file'), \
+             patch.object(core.Config, 'load_credentials', return_value=mock_creds), \
              patch('core.build', return_value=mock_service):
             gporg.main()
 
@@ -239,8 +247,12 @@ class TestCLIOrganize:
         mock_service.albums().create().execute.return_value = {'id': 'new_album'}
         mock_service.mediaItems().search().execute.return_value = {'mediaItems': []}
 
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_creds.expired = False
+
         with patch.object(sys, 'argv', ['gporg', 'organize', '--year', '2023']), \
-             patch('core.service_account.Credentials.from_service_account_file'), \
+             patch.object(core.Config, 'load_credentials', return_value=mock_creds), \
              patch('core.build', return_value=mock_service):
             gporg.main()
 

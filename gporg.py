@@ -19,8 +19,10 @@ import signal
 from pathlib import Path
 
 from core import (
-    Config, PhotosService, get_available_years,
-    validate_credentials_path, validate_year
+    Config, PhotosService, PhotoFilter, get_available_years,
+    validate_credentials_path, validate_year, validate_date,
+    validate_media_type, validate_categories,
+    MEDIA_TYPE_ALL, MEDIA_TYPE_PHOTO, MEDIA_TYPE_VIDEO, CONTENT_CATEGORIES
 )
 
 # Verbosity levels: 0=WARNING, 1=INFO, 2=DEBUG, 3+=TRACE (DEBUG with extra)
@@ -182,30 +184,98 @@ def cmd_config(args):
 
 
 def cmd_organize(args):
-    """Organize photos from CLI."""
+    """Organize photos from CLI with flexible filtering."""
     log_debug("Starting organize command")
     config = Config()
 
     if not config.is_configured:
         print("Error: No credentials configured.")
-        print("Run: gporg config /path/to/service-account.json")
+        print("Run: gporg config /path/to/credentials.json")
         sys.exit(1)
 
-    # Validate year
-    is_valid, error, year = validate_year(args.year)
-    if not is_valid:
-        print(f"Error: {error}")
+    # Build PhotoFilter from arguments
+    photo_filter = PhotoFilter()
+
+    # Handle date range vs year filtering
+    if args.start_date or args.end_date:
+        # Date range filtering
+        if args.start_date:
+            is_valid, error, start_date = validate_date(args.start_date)
+            if not is_valid:
+                print(f"Error: Invalid start date: {error}")
+                sys.exit(1)
+            photo_filter.start_date = start_date
+
+        if args.end_date:
+            is_valid, error, end_date = validate_date(args.end_date)
+            if not is_valid:
+                print(f"Error: Invalid end date: {error}")
+                sys.exit(1)
+            photo_filter.end_date = end_date
+
+        # Validate date range
+        if photo_filter.start_date and photo_filter.end_date:
+            if photo_filter.start_date > photo_filter.end_date:
+                print("Error: Start date must be before end date")
+                sys.exit(1)
+    elif args.year:
+        # Legacy year filtering
+        is_valid, error, year = validate_year(args.year)
+        if not is_valid:
+            print(f"Error: {error}")
+            sys.exit(1)
+        photo_filter.year = year
+    else:
+        print("Error: Must specify either --year or --start-date/--end-date")
         sys.exit(1)
 
-    album_name = args.album or f"Photos from {year}"
+    # Handle media type
+    if args.media_type:
+        is_valid, error = validate_media_type(args.media_type)
+        if not is_valid:
+            print(f"Error: {error}")
+            sys.exit(1)
+        photo_filter.media_type = args.media_type.upper()
+
+    # Handle categories
+    if args.category:
+        is_valid, error, categories = validate_categories(args.category)
+        if not is_valid:
+            print(f"Error: {error}")
+            sys.exit(1)
+        photo_filter.categories = categories
+
+    # Handle favorites
+    photo_filter.favorites_only = args.favorites
+
+    # Generate album name if not provided
+    if args.album:
+        album_name = args.album
+    elif photo_filter.year:
+        album_name = f"Photos from {photo_filter.year}"
+    elif photo_filter.start_date and photo_filter.end_date:
+        album_name = f"Photos {photo_filter.start_date} to {photo_filter.end_date}"
+    elif photo_filter.start_date:
+        album_name = f"Photos from {photo_filter.start_date}"
+    elif photo_filter.end_date:
+        album_name = f"Photos until {photo_filter.end_date}"
+    else:
+        album_name = "Organized Photos"
+
     skip_existing = not args.no_skip
 
-    log_info(f"Organizing year={year} album='{album_name}' skip_existing={skip_existing}")
-    print(f"Organizing photos from {year} into '{album_name}'...")
+    filter_desc = photo_filter.describe()
+    log_info(f"Organizing: {filter_desc}, album='{album_name}' skip_existing={skip_existing}")
+    print(f"Organizing photos ({filter_desc}) into '{album_name}'...")
 
     try:
-        log_debug(f"Creating PhotosService with {config.credentials_path}")
-        service = PhotosService(config.credentials_path)
+        log_debug(f"Creating PhotosService with config")
+        service = PhotosService(config)
+
+        # Ensure we're authorized
+        if not service.ensure_authorized():
+            print("Error: Authorization required. Please authorize through the web interface first.")
+            sys.exit(1)
 
         # Get or create album
         print("Finding/creating album...")
@@ -213,22 +283,22 @@ def cmd_organize(args):
         album_id = service.get_or_create_album(album_name)
         log_info(f"Using album ID: {album_id}")
 
-        # Search for photos
-        print(f"Searching for photos from {year}...")
-        log_debug(f"Searching photos with date filter: {year}-01-01 to {year}-12-31")
+        # Search for photos with filter
+        print(f"Searching for photos ({filter_desc})...")
+        log_debug(f"Searching with filter: {photo_filter}")
 
         def search_progress(count):
             log_trace(f"Search progress: {count} photos found")
             print(f"  Found {count} photos...", end='\r')
 
-        photos = service.search_photos_by_year(year, progress_callback=search_progress)
+        photos = service.search_photos(photo_filter, progress_callback=search_progress)
         print()  # newline after progress
 
         photo_ids = [p['id'] for p in photos]
-        log_info(f"Found {len(photo_ids)} photos for year {year}")
+        log_info(f"Found {len(photo_ids)} photos matching filter")
 
         if not photo_ids:
-            print(f"No photos found for {year}.")
+            print(f"No photos found matching filter.")
             return
 
         print(f"Found {len(photo_ids)} photos. Adding to album...")
@@ -265,14 +335,33 @@ def main():
         epilog="""
 Examples:
   gporg                              Start TUI (default)
-  gporg web                          Start web server on port 9090
+  gporg web                          Start web server on port 8099
   gporg web --public --port 8080     Start on all interfaces, port 8080
   gporg web --background             Start in background
   gporg web --stop                   Stop background server
   gporg config ~/creds.json          Set credentials file
   gporg config --show                Show current configuration
-  gporg organize --year 2023         Organize 2023 photos
+
+  # Organize by year
+  gporg organize --year 2023
   gporg organize --year 2023 --album "Vacation 2023"
+
+  # Organize by date range
+  gporg organize --start-date 2023-06-01 --end-date 2023-08-31 --album "Summer 2023"
+
+  # Filter by media type
+  gporg organize --year 2023 --media-type VIDEO --album "Videos 2023"
+
+  # Filter by content category
+  gporg organize --year 2023 --category SELFIES --category PEOPLE --album "People 2023"
+
+  # Favorites only
+  gporg organize --year 2023 --favorites --album "Best of 2023"
+
+  # Combined filters
+  gporg organize --start-date 2023-01-01 --end-date 2023-12-31 \\
+                 --media-type PHOTO --category LANDSCAPES --favorites \\
+                 --album "Favorite Landscapes 2023"
 
 Verbosity:
   -v      Show info messages
@@ -290,7 +379,7 @@ Verbosity:
 
     # Web subcommand
     web_parser = subparsers.add_parser('web', help='Start/stop web server')
-    web_parser.add_argument('--port', type=int, default=9090, help='Port (default: 9090)')
+    web_parser.add_argument('--port', type=int, default=8099, help='Port (default: 8099)')
     web_parser.add_argument('--public', action='store_true', help='Allow network access')
     web_parser.add_argument('--background', '-b', action='store_true', help='Run in background')
     web_parser.add_argument('--stop', action='store_true', help='Stop background server')
@@ -303,10 +392,32 @@ Verbosity:
     config_parser.set_defaults(func=cmd_config)
 
     # Organize subcommand
-    organize_parser = subparsers.add_parser('organize', help='Organize photos by year')
-    organize_parser.add_argument('--year', type=int, required=True, help='Year to organize')
-    organize_parser.add_argument('--album', type=str, help='Album name')
-    organize_parser.add_argument('--no-skip', action='store_true', help="Don't skip existing")
+    organize_parser = subparsers.add_parser('organize', help='Organize photos with filters')
+
+    # Date filtering (mutually exclusive groups aren't needed, we handle logic in cmd_organize)
+    date_group = organize_parser.add_argument_group('date filters')
+    date_group.add_argument('--year', type=int, help='Year to organize (e.g., 2023)')
+    date_group.add_argument('--start-date', type=str, metavar='YYYY-MM-DD',
+                           help='Start date for date range filter')
+    date_group.add_argument('--end-date', type=str, metavar='YYYY-MM-DD',
+                           help='End date for date range filter')
+
+    # Content filtering
+    filter_group = organize_parser.add_argument_group('content filters')
+    filter_group.add_argument('--media-type', type=str, choices=['ALL', 'PHOTO', 'VIDEO'],
+                             default='ALL', help='Filter by media type (default: ALL)')
+    filter_group.add_argument('--category', type=str, action='append', metavar='CATEGORY',
+                             help=f'Filter by content category (can be repeated). '
+                                  f'Options: {", ".join(CONTENT_CATEGORIES)}')
+    filter_group.add_argument('--favorites', action='store_true',
+                             help='Only include favorite/starred items')
+
+    # Album options
+    album_group = organize_parser.add_argument_group('album options')
+    album_group.add_argument('--album', type=str, help='Target album name')
+    album_group.add_argument('--no-skip', action='store_true',
+                            help="Don't skip photos already in album")
+
     organize_parser.set_defaults(func=cmd_organize)
 
     args = parser.parse_args()

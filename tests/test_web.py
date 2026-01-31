@@ -140,10 +140,15 @@ class TestAlbumsEndpoint:
 
     def test_get_albums_success(self, web_client, mock_credentials_file, mock_photos_service):
         """Test GET /api/albums with valid configuration."""
+        import core
         import web
         web.config.set_credentials(str(mock_credentials_file))
 
-        with patch('core.service_account.Credentials.from_service_account_file'), \
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_creds.expired = False
+
+        with patch.object(core.Config, 'load_credentials', return_value=mock_creds), \
              patch('core.build', return_value=mock_photos_service):
 
             response = web_client.get('/api/albums', headers=auth_headers(web_client))
@@ -179,8 +184,8 @@ class TestOrganizeEndpoint:
         )
         assert response.status_code == 401
 
-    def test_organize_missing_year(self, web_client, mock_credentials_file):
-        """Test POST /api/organize without year."""
+    def test_organize_missing_date_filter(self, web_client, mock_credentials_file):
+        """Test POST /api/organize without year or date range."""
         import web
         web.config.set_credentials(str(mock_credentials_file))
 
@@ -193,7 +198,7 @@ class TestOrganizeEndpoint:
         data = response.get_json()
 
         assert response.status_code == 400
-        assert 'Year is required' in data['error']
+        assert 'year or start_date/end_date' in data['error']
 
     def test_organize_missing_album(self, web_client, mock_credentials_file):
         """Test POST /api/organize without album."""

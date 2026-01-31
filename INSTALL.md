@@ -133,4 +133,4 @@ Ensure the JSON file contains `"type": "service_account"`
 ### Web UI not accessible
 - Default binds to localhost only
 - Use `--public` flag for network access
-- Check firewall allows port 9090
+- Check firewall allows port 8099

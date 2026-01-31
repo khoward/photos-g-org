@@ -5,7 +5,7 @@ Organize your Google Photos library by year into albums. Features a rich termina
 ## Features
 
 - **TUI**: Rich terminal interface with keyboard navigation
-- **Web UI**: Glassmorphism dark theme, mobile-friendly (port 9090)
+- **Web UI**: Glassmorphism dark theme, mobile-friendly (port 8099)
 - **CLI**: Quick commands for scripting and automation
 - **Parallel Processing**: Batch operations with 4 concurrent workers
 - **Security**: API key authentication, rate limiting, localhost-only by default
@@ -57,7 +57,7 @@ Arrow keys to navigate, Enter to select, Escape to go back.
 ```bash
 python gporg.py web
 ```
-Open http://localhost:9090 in your browser. The API key is displayed on startup.
+Open http://localhost:8099 in your browser. The API key is displayed on startup.
 
 ### CLI
 ```bash

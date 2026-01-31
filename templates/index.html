@@ -29,13 +29,67 @@
         <!-- Filter Card -->
         <article class="glass-card">
             <header>
-                <h3>Filter</h3>
+                <h3>Filters</h3>
             </header>
             <div class="card-content">
-                <label for="year-select">Year</label>
-                <select id="year-select">
-                    <option value="">Select year...</option>
+                <!-- Date Filter Mode Toggle -->
+                <fieldset>
+                    <legend>Date Filter Mode</legend>
+                    <label>
+                        <input type="radio" name="date-mode" value="year" checked onchange="toggleDateMode()">
+                        Filter by Year
+                    </label>
+                    <label>
+                        <input type="radio" name="date-mode" value="range" onchange="toggleDateMode()">
+                        Filter by Date Range
+                    </label>
+                </fieldset>
+
+                <!-- Year Selection -->
+                <div id="year-filter-section">
+                    <label for="year-select">Year</label>
+                    <select id="year-select">
+                        <option value="">Select year...</option>
+                    </select>
+                </div>
+
+                <!-- Date Range Selection -->
+                <div id="date-range-section" class="hidden">
+                    <div class="grid">
+                        <div>
+                            <label for="start-date">Start Date</label>
+                            <input type="date" id="start-date">
+                        </div>
+                        <div>
+                            <label for="end-date">End Date</label>
+                            <input type="date" id="end-date">
+                        </div>
+                    </div>
+                </div>
+
+                <hr>
+
+                <!-- Media Type Filter -->
+                <label for="media-type">Media Type</label>
+                <select id="media-type">
+                    <option value="ALL">All Media</option>
+                    <option value="PHOTO">Photos Only</option>
+                    <option value="VIDEO">Videos Only</option>
                 </select>
+
+                <!-- Content Categories -->
+                <details>
+                    <summary>Content Categories (optional)</summary>
+                    <div id="categories-list" class="categories-grid">
+                        <!-- Populated by JavaScript -->
+                    </div>
+                </details>
+
+                <!-- Favorites Filter -->
+                <label>
+                    <input type="checkbox" id="favorites-only">
+                    Favorites only
+                </label>
             </div>
         </article>
 
@@ -105,11 +159,14 @@
         // API Key management
         let apiKey = localStorage.getItem('gporg_api_key');
 
+        // Filter options (populated from server)
+        let filterOptions = { media_types: [], categories: [], years: [] };
+
         // Initialize on load
         document.addEventListener('DOMContentLoaded', async () => {
             await ensureApiKey();
             checkConfig();
-            loadYears();
+            loadFilterOptions();
             loadAlbums();
         });
 
@@ -219,24 +276,44 @@
             }
         }
 
-        // Load available years
-        async function loadYears() {
+        // Load filter options (years, media types, categories)
+        async function loadFilterOptions() {
             try {
-                const response = await fetch('/api/years');
-                const data = await response.json();
+                const response = await fetch('/api/filter-options');
+                filterOptions = await response.json();
 
-                const select = document.getElementById('year-select');
-                select.innerHTML = '<option value="">Select year...</option>';
-
-                for (const year of data.years) {
+                // Populate year select
+                const yearSelect = document.getElementById('year-select');
+                yearSelect.innerHTML = '<option value="">Select year...</option>';
+                for (const year of filterOptions.years) {
                     const option = document.createElement('option');
                     option.value = year;
                     option.textContent = year;
-                    select.appendChild(option);
+                    yearSelect.appendChild(option);
+                }
+
+                // Populate categories checkboxes
+                const categoriesList = document.getElementById('categories-list');
+                categoriesList.innerHTML = '';
+                for (const category of filterOptions.categories) {
+                    if (category === 'NONE') continue; // Skip NONE
+                    const label = document.createElement('label');
+                    label.innerHTML = `
+                        <input type="checkbox" name="category" value="${category}">
+                        ${category.charAt(0) + category.slice(1).toLowerCase()}
+                    `;
+                    categoriesList.appendChild(label);
                 }
             } catch (e) {
-                console.error('Error loading years:', e);
+                console.error('Error loading filter options:', e);
             }
+        }
+
+        // Toggle date filter mode (year vs date range)
+        function toggleDateMode() {
+            const mode = document.querySelector('input[name="date-mode"]:checked').value;
+            document.getElementById('year-filter-section').classList.toggle('hidden', mode !== 'year');
+            document.getElementById('date-range-section').classList.toggle('hidden', mode !== 'range');
         }
 
         // Load albums list
@@ -272,25 +349,102 @@
             document.getElementById('existing-album-section').classList.toggle('hidden', mode !== 'existing');
         }
 
-        // Start organization
-        async function startOrganize() {
-            const year = document.getElementById('year-select').value;
-            if (!year) {
-                alert('Please select a year');
-                return;
+        // Get selected categories
+        function getSelectedCategories() {
+            const checkboxes = document.querySelectorAll('input[name="category"]:checked');
+            return Array.from(checkboxes).map(cb => cb.value);
+        }
+
+        // Build filter description for album name suggestion
+        function buildFilterDescription() {
+            const dateMode = document.querySelector('input[name="date-mode"]:checked').value;
+            let desc = '';
+
+            if (dateMode === 'year') {
+                const year = document.getElementById('year-select').value;
+                desc = year ? `Photos from ${year}` : 'Photos';
+            } else {
+                const startDate = document.getElementById('start-date').value;
+                const endDate = document.getElementById('end-date').value;
+                if (startDate && endDate) {
+                    desc = `Photos ${startDate} to ${endDate}`;
+                } else if (startDate) {
+                    desc = `Photos from ${startDate}`;
+                } else if (endDate) {
+                    desc = `Photos until ${endDate}`;
+                } else {
+                    desc = 'Photos';
+                }
             }
 
-            const mode = document.querySelector('input[name="album-mode"]:checked').value;
-            const skipExisting = document.getElementById('skip-existing').checked;
+            const mediaType = document.getElementById('media-type').value;
+            if (mediaType === 'PHOTO') desc = desc.replace('Photos', 'Photos');
+            else if (mediaType === 'VIDEO') desc = desc.replace('Photos', 'Videos');
 
-            let albumId = null;
-            let albumName = null;
+            const categories = getSelectedCategories();
+            if (categories.length > 0 && categories.length <= 2) {
+                desc += ' - ' + categories.map(c => c.charAt(0) + c.slice(1).toLowerCase()).join(', ');
+            }
 
-            if (mode === 'new') {
-                albumName = document.getElementById('new-album-name').value || `Photos from ${year}`;
+            if (document.getElementById('favorites-only').checked) {
+                desc += ' (Favorites)';
+            }
+
+            return desc;
+        }
+
+        // Start organization
+        async function startOrganize() {
+            const dateMode = document.querySelector('input[name="date-mode"]:checked').value;
+
+            // Build request body
+            const requestBody = {
+                skip_existing: document.getElementById('skip-existing').checked
+            };
+
+            // Date filters
+            if (dateMode === 'year') {
+                const year = document.getElementById('year-select').value;
+                if (!year) {
+                    alert('Please select a year');
+                    return;
+                }
+                requestBody.year = parseInt(year);
             } else {
-                albumId = document.getElementById('existing-album').value;
-                if (!albumId) {
+                const startDate = document.getElementById('start-date').value;
+                const endDate = document.getElementById('end-date').value;
+                if (!startDate && !endDate) {
+                    alert('Please select at least a start or end date');
+                    return;
+                }
+                if (startDate) requestBody.start_date = startDate;
+                if (endDate) requestBody.end_date = endDate;
+            }
+
+            // Media type filter
+            const mediaType = document.getElementById('media-type').value;
+            if (mediaType !== 'ALL') {
+                requestBody.media_type = mediaType;
+            }
+
+            // Categories filter
+            const categories = getSelectedCategories();
+            if (categories.length > 0) {
+                requestBody.categories = categories;
+            }
+
+            // Favorites filter
+            if (document.getElementById('favorites-only').checked) {
+                requestBody.favorites_only = true;
+            }
+
+            // Album options
+            const albumMode = document.querySelector('input[name="album-mode"]:checked').value;
+            if (albumMode === 'new') {
+                requestBody.album_name = document.getElementById('new-album-name').value || buildFilterDescription();
+            } else {
+                requestBody.album_id = document.getElementById('existing-album').value;
+                if (!requestBody.album_id) {
                     alert('Please select an album');
                     return;
                 }
@@ -305,12 +459,7 @@
                 const response = await authFetch('/api/organize', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        year: parseInt(year),
-                        album_id: albumId,
-                        album_name: albumName,
-                        skip_existing: skipExisting
-                    })
+                    body: JSON.stringify(requestBody)
                 });
 
                 const data = await response.json();
